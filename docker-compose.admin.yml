@@ -1,0 +1,21 @@
+# Admin panel (Next.js), combined with any of the database files:
+#   docker compose -f docker-compose.postgres.yml -f docker-compose.admin.yml up --build
+#
+#   Panel: http://localhost:3000   API: http://localhost:8080
+#
+# It can also be combined with docker-compose.observability.yml.
+services:
+  admin:
+    build: ./admin
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${ADMIN_PORT:-3000}:3000"
+    environment:
+      # The panel calls the API over the compose network; the browser never does.
+      API_URL: http://api:8080
+      # Address of the pixel in the snippet given to the users.
+      PIXEL_BASE_URL: ${PIXEL_BASE_URL:-http://localhost:8080}
+      # Plain HTTP on localhost; use true behind HTTPS.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}

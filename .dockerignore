@@ -1,0 +1,19 @@
+# Secrets and local builds stay out of the image; configuration comes from the
+# compose environment.
+.env
+*.exe
+/email-tracker
+.git
+.vscode
+.idea
+docker-compose.*.yml
+Dockerfile
+build.sh
+build.bat
+# The admin panel has its own image (admin/Dockerfile).
+admin
+observability
+
+# The Swagger UI and the OpenAPI spec are embedded in the binary (go:embed),
+# so the build needs them. Kept last so no pattern above can exclude them.
+!api/docs/**

@@ -1,0 +1,25 @@
+# Optional observability stack, combined with any of the database files:
+#   docker compose -f docker-compose.postgres.yml -f docker-compose.observability.yml up --build
+#
+#   Jaeger (traces):     http://localhost:16686
+#   Prometheus (metrics): http://localhost:9090
+#   Logs:                docker compose -f ... logs -f api
+services:
+  api:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    depends_on:
+      jaeger:
+        condition: service_started
+
+  jaeger:
+    image: jaegertracing/jaeger:2.5.0
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"

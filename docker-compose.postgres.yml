@@ -1,0 +1,53 @@
+# API + PostgreSQL.
+#   docker compose -f docker-compose.postgres.yml up --build
+# JWT_SECRET and SUPERADMIN_PASSWORD are read from the .env in this folder.
+name: email-pixel-tracker-postgres
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: email_pixel_tracker
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # TCP check: during initialization the server listens only on the socket.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d email_pixel_tracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8080}:8080"
+    environment:
+      DB_DRIVER: postgres
+      DB_DSN: "host=postgres user=postgres password=${POSTGRES_PASSWORD:-postgres} dbname=email_pixel_tracker port=5432 sslmode=disable"
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_TTL: ${JWT_TTL:-1h}
+      BCRYPT_COST: ${BCRYPT_COST:-12}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
+      DOCS_PATH: ${DOCS_PATH:-}
+      SUPERADMIN_USERNAME: ${SUPERADMIN_USERNAME:-superadmin}
+      SUPERADMIN_NAME: ${SUPERADMIN_NAME:-Super Admin}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:?set SUPERADMIN_PASSWORD in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      # Internal only (not published); see docker-compose.observability.yml.
+      METRICS_ADDR: ":9464"
+      RECAPTCHA_ENABLED: ${RECAPTCHA_ENABLED:-false}
+      RECAPTCHA_SITE_KEY: ${RECAPTCHA_SITE_KEY:-}
+      RECAPTCHA_SECRET_KEY: ${RECAPTCHA_SECRET_KEY:-}
+      RECAPTCHA_MIN_SCORE: ${RECAPTCHA_MIN_SCORE:-0.5}
+
+volumes:
+  postgres-data:

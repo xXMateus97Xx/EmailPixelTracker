@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Email Pixel Tracker API</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #fafafa; }
+    .tip {
+      font: 14px/1.5 system-ui, sans-serif;
+      background: #fff8e1;
+      border-bottom: 1px solid #f0d58a;
+      padding: 10px 16px;
+      color: #5d4400;
+    }
+    .tip code { background: #fff; padding: 1px 4px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div class="tip">
+    Faça login em <code>POST /api/auth/login</code> (ou impersone um tenant em <code>POST /api/auth/impersonate</code>):
+    o token retornado é aplicado automaticamente nas próximas chamadas. Para trocar de usuário, use o botão
+    <strong>Authorize</strong> ou faça login de novo.
+  </div>
+  <div id="swagger-ui"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    // Calls whose response carries a new token to use from then on.
+    const tokenPaths = ["/api/auth/login", "/api/auth/impersonate", "/api/auth/stop-impersonation"];
+
+    function applyToken(ui, token) {
+      ui.authActions.authorize({
+        bearerAuth: {
+          name: "bearerAuth",
+          schema: { type: "http", scheme: "bearer" },
+          value: token,
+        },
+      });
+    }
+
+    window.ui = SwaggerUIBundle({
+      url: "openapi.yaml",
+      dom_id: "#swagger-ui",
+      deepLinking: true,
+      persistAuthorization: true,
+      displayRequestDuration: true,
+      tryItOutEnabled: true,
+      responseInterceptor: (response) => {
+        try {
+          const path = new URL(response.url, window.location.href).pathname;
+          if (response.ok && tokenPaths.includes(path)) {
+            const body = response.body || JSON.parse(response.text);
+            if (body && body.token) {
+              applyToken(window.ui, body.token);
+            }
+          }
+        } catch (e) {
+          console.warn("could not apply token", e);
+        }
+        return response;
+      },
+    });
+  </script>
+</body>
+</html>

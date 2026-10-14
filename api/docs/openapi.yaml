@@ -1,0 +1,1384 @@
+openapi: 3.0.3
+info:
+  title: Email Pixel Tracker API
+  version: 1.0.0
+  description: |
+    API multi-tenant para rastrear a abertura de e-mails através de um pixel.
+
+    ## Autenticação
+    1. Faça login em `POST /api/auth/login` com `username` e senha para receber um token JWT.
+    2. Envie o token em todas as rotas protegidas no header `Authorization: Bearer <token>`.
+
+    O token apenas identifica o usuário: a cada requisição o usuário e o tenant são
+    recarregados do banco. Desativar um usuário, mudar sua role ou desativar o
+    tenant tem efeito imediato, mesmo com um token ainda válido.
+
+    ## Tenants e impersonate
+    Todos os dados (usuários, campanhas e visualizações) são filtrados pelo tenant
+    do usuário autenticado. O **SuperAdmin** não pertence a nenhum tenant: para
+    acessar os dados de um tenant ele usa `POST /api/auth/impersonate`, que devolve
+    um novo token escopado ao tenant escolhido. Um tenant **inativo** só pode ser
+    impersonado em modo consulta (`readOnly: true` em `GET /api/auth/me`).
+
+    ## Permissões
+    Cada usuário tem uma única role. A role **API** é de somente leitura, pensada para
+    integrações que consultam campanhas e relatórios.
+
+    | Role | Tenants | Usuários | Campanhas | Relatórios |
+    |---|---|---|---|---|
+    | SuperAdmin | cadastra e edita | cadastra e edita | cadastra e edita (impersonando) | lê (impersonando) |
+    | Admin | lê o próprio | cadastra e edita | cadastra e edita | lê |
+    | ContentManager | lê o próprio | — | cadastra e edita | lê |
+    | API | lê o próprio | — | lê | lê |
+
+    Usuários de um tenant inativo não conseguem fazer login nem usar a API.
+
+    ## Erros
+    Erros são retornados como JSON no formato `Error`. Erros de validação (400)
+    trazem a lista de campos inválidos em `fields`.
+
+    ## Rastreabilidade
+    Toda resposta traz o header `X-Request-ID`. Ele pode ser enviado na requisição
+    (até 64 caracteres: letras, números e `. _ : -`); caso contrário é gerado. Erros
+    internos (500) devolvem o mesmo valor em `requestId`, para localizar a requisição
+    nos logs. O header `traceparent` (W3C Trace Context) também é aceito e continua o
+    trace de quem chamou.
+servers:
+  - url: /
+    description: Servidor atual
+tags:
+  - name: Auth
+    description: Login, usuário atual e impersonate.
+  - name: Tenants
+  - name: Users
+    description: Usuários do tenant atual. Um SuperAdmin sem impersonate gerencia os outros SuperAdmins.
+  - name: Campaigns
+  - name: Reports
+    description: Visualizações e relatórios de uma campanha. Mesmo acesso de leitura da campanha.
+  - name: Pixel
+    description: Rota pública usada nos e-mails.
+  - name: Health
+
+paths:
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Verifica se o processo está no ar (liveness)
+      operationId: healthLive
+      description: Não consulta o banco. Responde 200 enquanto o processo estiver de pé.
+      security: []
+      responses:
+        "200":
+          description: Processo no ar.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Verifica se a API pode atender requisições (readiness)
+      operationId: healthReady
+      description: |
+        Faz um ping no banco de dados (tempo limite de 3 segundos). Responde 503 enquanto o
+        banco não responder, para que balanceadores e orquestradores parem de enviar tráfego.
+        O motivo da falha vai para o log, nunca para a resposta.
+      security: []
+      responses:
+        "200":
+          description: Pronta.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+              example:
+                status: ok
+        "503":
+          description: O banco de dados não respondeu.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+              example:
+                status: unavailable
+
+  /pixel/{campaignId}:
+    get:
+      tags: [Pixel]
+      summary: Registra uma visualização e retorna o pixel da campanha
+      operationId: trackPixel
+      description: |
+        Rota **pública**, para ser usada como imagem no corpo do e-mail:
+
+        ```html
+        <img src="https://seu-dominio/pixel/{campaignId}?externalUserId=cliente-42" width="1" height="1" alt="">
+        ```
+
+        Registra a visualização (IP, User-Agent e `externalUserId`) e retorna um PNG de
+        1x1 pixel com a cor RGBA da campanha. A resposta não deve ser guardada em cache,
+        para que cada abertura seja contada.
+
+        Retorna **404 sem corpo** quando a campanha não existe, está desativada, expirou
+        ou quando o tenant dela está desativado.
+      security: []
+      parameters:
+        - name: campaignId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: externalUserId
+          in: query
+          required: false
+          description: Identificador do destinatário no seu sistema. Usado para contar visualizações únicas; sem ele, o IP é usado.
+          schema:
+            type: string
+            maxLength: 200
+      responses:
+        "200":
+          description: Pixel da campanha.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store, no-cache, must-revalidate, private, max-age=0
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Campanha inexistente, desativada, expirada ou de um tenant desativado. Sem corpo.
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Faz login e retorna um token
+      operationId: login
+      description: |
+        Com o reCAPTCHA ativo (veja `GET /api/auth/recaptcha`), `recaptchaToken` é obrigatório
+        e é verificado antes do usuário e da senha.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login realizado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Token"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Usuário inexistente, senha incorreta ou usuário inativo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid credentials
+        "403":
+          description: |
+            O tenant do usuário está inativo (`tenant is inactive`) ou o token do reCAPTCHA foi
+            recusado: inválido, expirado (vale 2 minutos e uma única vez), gerado para outra ação
+            ou com nota abaixo do mínimo (`recaptcha verification failed`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: tenant is inactive
+        "503":
+          description: O Google não respondeu à verificação do reCAPTCHA; o login é recusado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: recaptcha verification unavailable
+
+  /api/auth/recaptcha:
+    get:
+      tags: [Auth]
+      summary: Informa se o reCAPTCHA v3 está ativo no login
+      operationId: recaptchaConfig
+      description: |
+        Público. Quando `enabled` é true, a tela de login carrega
+        `https://www.google.com/recaptcha/api.js?render=<siteKey>`, gera um token com
+        `grecaptcha.execute(siteKey, {action})` e o envia em `recaptchaToken` no login.
+      security: []
+      responses:
+        "200":
+          description: Configuração do reCAPTCHA.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecaptchaConfig"
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Retorna o usuário autenticado
+      operationId: me
+      responses:
+        "200":
+          description: Usuário atual.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/auth/impersonate:
+    post:
+      tags: [Auth]
+      summary: Impersona um tenant (somente SuperAdmin)
+      operationId: impersonate
+      description: |
+        Retorna um novo token escopado ao tenant informado. Use esse token nas
+        próximas chamadas. Se o tenant estiver inativo, o acesso é somente leitura.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImpersonateRequest"
+      responses:
+        "200":
+          description: Token escopado ao tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Token"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/auth/stop-impersonation:
+    post:
+      tags: [Auth]
+      summary: Encerra o impersonate (somente SuperAdmin)
+      operationId: stopImpersonation
+      responses:
+        "200":
+          description: Token sem tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Token"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/roles:
+    get:
+      tags: [Auth]
+      summary: Lista as roles e quais o usuário atual pode atribuir
+      operationId: listRoles
+      description: Disponível para qualquer usuário autenticado. Usada para montar o formulário de usuários.
+      responses:
+        "200":
+          description: Todas as roles.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleList"
+              example:
+                items:
+                  - { name: SuperAdmin, assignable: false }
+                  - { name: Admin, assignable: true }
+                  - { name: ContentManager, assignable: true }
+                  - { name: API, assignable: true }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/tenants:
+    get:
+      tags: [Tenants]
+      summary: Lista os tenants (somente SuperAdmin)
+      operationId: listTenants
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Página de tenants.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Tenants]
+      summary: Cadastra um tenant (somente SuperAdmin)
+      operationId: createTenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantRequest"
+      responses:
+        "201":
+          description: Tenant cadastrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/tenants/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Tenants]
+      summary: Busca um tenant
+      operationId: getTenant
+      description: O SuperAdmin pode buscar qualquer tenant; os demais usuários, apenas o próprio.
+      responses:
+        "200":
+          description: Tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Tenants]
+      summary: Edita um tenant (somente SuperAdmin)
+      operationId: updateTenant
+      description: Permitido mesmo impersonando um tenant inativo, por exemplo para reativá-lo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantUpdateRequest"
+      responses:
+        "200":
+          description: Tenant atualizado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/users:
+    get:
+      tags: [Users]
+      summary: Lista os usuários do tenant atual (SuperAdmin e Admin)
+      operationId: listUsers
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Página de usuários.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Users]
+      summary: Cadastra um usuário no tenant atual (SuperAdmin e Admin)
+      operationId: createUser
+      description: |
+        O usuário é criado no tenant do usuário autenticado (ou no tenant impersonado).
+
+        Cada usuário tem uma única role. Somente um SuperAdmin pode criar outro
+        SuperAdmin, e apenas sem impersonate (SuperAdmins não pertencem a tenant).
+
+        O `username` é usado no login: não pode conter espaços, é único entre todos os
+        usuários e é gravado em minúsculas (o login não diferencia maiúsculas).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserCreateRequest"
+      responses:
+        "201":
+          description: Usuário cadastrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Users]
+      summary: Busca um usuário do tenant atual (SuperAdmin e Admin)
+      operationId: getUser
+      responses:
+        "200":
+          description: Usuário.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Users]
+      summary: Edita um usuário do tenant atual (SuperAdmin e Admin)
+      operationId: updateUser
+      description: Um usuário não pode desativar a si mesmo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserUpdateRequest"
+      responses:
+        "200":
+          description: Usuário atualizado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/campaigns:
+    get:
+      tags: [Campaigns]
+      summary: Lista as campanhas do tenant atual
+      operationId: listCampaigns
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Página de campanhas.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Campaigns]
+      summary: Cadastra uma campanha no tenant atual (SuperAdmin, Admin e ContentManager)
+      operationId: createCampaign
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CampaignRequest"
+      responses:
+        "201":
+          description: Campanha cadastrada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/campaigns/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Campaigns]
+      summary: Busca uma campanha do tenant atual
+      operationId: getCampaign
+      responses:
+        "200":
+          description: Campanha.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Campaigns]
+      summary: Edita uma campanha do tenant atual (SuperAdmin, Admin e ContentManager)
+      operationId: updateCampaign
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CampaignUpdateRequest"
+      responses:
+        "200":
+          description: Campanha atualizada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/campaigns/{id}/views:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Reports]
+      summary: Lista as visualizações da campanha, da mais recente para a mais antiga
+      operationId: listCampaignViews
+      parameters:
+        - $ref: "#/components/parameters/FromUtc"
+        - $ref: "#/components/parameters/ToUtc"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Página de visualizações.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignViewPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/campaigns/{id}/reports/summary:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Reports]
+      summary: Total de visualizações e visualizações únicas da campanha
+      operationId: campaignViewSummary
+      description: |
+        Uma visualização **única** é um `externalUserId` distinto ou, nas visualizações
+        sem `externalUserId`, um IP distinto. Um `externalUserId` igual a um IP é contado
+        separadamente desse IP.
+      parameters:
+        - $ref: "#/components/parameters/FromUtc"
+        - $ref: "#/components/parameters/ToUtc"
+      responses:
+        "200":
+          description: Resumo das visualizações.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ViewSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/campaigns/{id}/reports/daily:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Reports]
+      summary: Visualizações totais e únicas por dia (UTC)
+      operationId: campaignViewDaily
+      description: |
+        Retorna um item por dia do período, incluindo os dias sem visualizações (com zero).
+        Sem `fromUtc` (ou `toUtc`), o primeiro (ou último) dia com visualizações é usado.
+        O período pode ter no máximo 366 dias. A contagem única é feita dentro de cada dia.
+      parameters:
+        - $ref: "#/components/parameters/FromUtc"
+        - $ref: "#/components/parameters/ToUtc"
+      responses:
+        "200":
+          description: Visualizações por dia.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyViews"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/campaigns/{id}/reports/user-agents:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Reports]
+      summary: Visualizações agrupadas pelo user agent
+      operationId: campaignViewUserAgents
+      description: |
+        Agrupa as visualizações pelo que o header `User-Agent` informa, em quatro visões:
+        cliente de e-mail ou navegador (`clients`), sistema operacional
+        (`operatingSystems`), dispositivo (`devices`) e o user agent completo (`userAgents`).
+        Cada lista vem ordenada da mais vista para a menos vista.
+
+        A classificação conhece os casos de e-mail: o Gmail e o Yahoo Mail buscam as
+        imagens por um proxy (`Gmail`, `Yahoo Mail`, dispositivo `Email proxy`), que
+        esconde o sistema e o dispositivo de quem abriu (`Unknown`). O Apple Mail é
+        reconhecido pelo WebKit sem o token do Safari.
+
+        Valores genéricos: `Unknown` (a visualização não tinha user agent) e `Other`
+        (user agent não reconhecido); `Bot` para robôs e ferramentas de automação.
+
+        A contagem única é feita dentro de cada grupo: um destinatário que abriu no
+        celular e no computador conta uma vez em cada dispositivo.
+      parameters:
+        - $ref: "#/components/parameters/FromUtc"
+        - $ref: "#/components/parameters/ToUtc"
+      responses:
+        "200":
+          description: Visualizações por user agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserAgentReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/campaigns/{id}/reports/export:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Reports]
+      summary: Exporta todos os relatórios em uma planilha Excel
+      operationId: exportCampaignReports
+      description: |
+        Gera um arquivo `.xlsx` com uma aba por relatório: **Resumo**, **Por dia**,
+        **Clientes de e-mail**, **Sistemas operacionais**, **Dispositivos**, **User agents**
+        e **Visualizações** (todas as visualizações do período, da mais recente para a
+        mais antiga). Os textos da planilha estão em português e as datas em UTC.
+
+        Todas as abas contam as mesmas visualizações: sem `toUtc`, ou com `toUtc` no
+        futuro, o período termina no momento da exportação. Como no relatório diário, o
+        período pode ter no máximo 366 dias. A aba Visualizações é limitada às 1.048.575
+        mais recentes (o limite de linhas do Excel); quando isso acontece, o Resumo avisa.
+      parameters:
+        - $ref: "#/components/parameters/FromUtc"
+        - $ref: "#/components/parameters/ToUtc"
+      responses:
+        "200":
+          description: Planilha com os relatórios.
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename=relatorio-<campanha>-<de>-<até>.xlsx`'
+              schema:
+                type: string
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token retornado por `POST /api/auth/login` ou `POST /api/auth/impersonate`.
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    Page:
+      name: page
+      in: query
+      required: false
+      description: Número da página, começando em 1.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      description: Itens por página. Valores acima de 100 são reduzidos para 100.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    FromUtc:
+      name: fromUtc
+      in: query
+      required: false
+      description: Início do período (inclusive), em RFC 3339.
+      schema:
+        type: string
+        format: date-time
+        example: "2026-10-01T00:00:00Z"
+    ToUtc:
+      name: toUtc
+      in: query
+      required: false
+      description: Fim do período (exclusivo), em RFC 3339. Deve ser posterior a `fromUtc`.
+      schema:
+        type: string
+        format: date-time
+        example: "2026-11-01T00:00:00Z"
+
+  responses:
+    BadRequest:
+      description: Requisição inválida ou erro de validação.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: validation failed
+            fields:
+              - field: name
+                message: must have between 1 and 200 characters
+    Unauthorized:
+      description: Token ausente, inválido ou expirado; ou usuário inexistente ou inativo.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: unauthenticated
+    Forbidden:
+      description: |
+        Sem permissão para a operação. Também retornado quando o tenant está inativo
+        (ou é impersonado em modo consulta e a operação altera dados) e quando um
+        SuperAdmin acessa dados de tenant sem impersonate.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            forbidden:
+              value:
+                error: forbidden
+            tenantInactive:
+              value:
+                error: tenant is inactive
+            impersonationRequired:
+              value:
+                error: impersonation required to access tenant data
+    NotFound:
+      description: Registro não encontrado no tenant atual.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: not found
+    Conflict:
+      description: Conflito de unicidade detectado pelo banco (cadastros simultâneos com o mesmo nome).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: conflict
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldError"
+        requestId:
+          type: string
+          description: Enviado nos erros internos (500); é o mesmo valor do header `X-Request-ID` e identifica a requisição nos logs.
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+          example: name
+        message:
+          type: string
+          example: is already in use
+
+    Role:
+      type: string
+      enum: [SuperAdmin, Admin, ContentManager, API]
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          description: Não diferencia maiúsculas de minúsculas.
+          example: superadmin
+        password:
+          type: string
+          format: password
+        recaptchaToken:
+          type: string
+          description: |
+            Token do reCAPTCHA v3, gerado com `grecaptcha.execute(siteKey, {action: "login"})`.
+            Obrigatório quando `GET /api/auth/recaptcha` retorna `enabled: true`; ignorado caso contrário.
+    RecaptchaConfig:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        siteKey:
+          type: string
+          description: Chave pública do site. Presente quando `enabled` é true.
+        action:
+          type: string
+          description: Ação a usar no `grecaptcha.execute`. Presente quando `enabled` é true.
+          example: login
+    ImpersonateRequest:
+      type: object
+      required: [tenantId]
+      properties:
+        tenantId:
+          type: string
+    Token:
+      type: object
+      required: [token, expiresAtUtc]
+      properties:
+        token:
+          type: string
+        expiresAtUtc:
+          type: string
+          format: date-time
+    Me:
+      type: object
+      required: [user, readOnly, permissions]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        impersonatedTenantId:
+          type: string
+          description: Presente apenas quando um SuperAdmin está impersonando um tenant.
+        readOnly:
+          type: boolean
+          description: Verdadeiro quando o tenant impersonado está inativo (modo consulta).
+        tenant:
+          $ref: "#/components/schemas/Tenant"
+        permissions:
+          $ref: "#/components/schemas/Permissions"
+    Permission:
+      type: object
+      required: [read, write]
+      properties:
+        read:
+          type: boolean
+        write:
+          type: boolean
+    Permissions:
+      type: object
+      description: |
+        O que a sessão atual pode fazer, para que um cliente mostre apenas as ações aceitas.
+        As regras continuam sendo aplicadas pela API em cada requisição.
+      required: [tenants, users, campaigns, impersonate]
+      properties:
+        tenants:
+          allOf:
+            - $ref: "#/components/schemas/Permission"
+          description: "`read` é listar todos os tenants; qualquer usuário pode ler o próprio tenant."
+        users:
+          $ref: "#/components/schemas/Permission"
+        campaigns:
+          allOf:
+            - $ref: "#/components/schemas/Permission"
+          description: Exige um tenant; um SuperAdmin precisa estar impersonando.
+        impersonate:
+          type: boolean
+    RoleInfo:
+      type: object
+      required: [name, assignable]
+      properties:
+        name:
+          $ref: "#/components/schemas/Role"
+        assignable:
+          type: boolean
+          description: |
+            Se o usuário atual pode atribuir a role a um usuário no escopo atual: um SuperAdmin
+            sem impersonate atribui SuperAdmin; dentro de um tenant, Admin, ContentManager e API.
+    RoleList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoleInfo"
+
+    TenantRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 200
+          description: Único entre todos os tenants.
+          example: Acme
+        active:
+          type: boolean
+          default: true
+    TenantUpdateRequest:
+      allOf:
+        - $ref: "#/components/schemas/TenantRequest"
+        - type: object
+          required: [active]
+    Tenant:
+      type: object
+      required: [id, name, active, createdAtUtc]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        active:
+          type: boolean
+        createdAtUtc:
+          type: string
+          format: date-time
+    TenantPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/Tenant"
+
+    Username:
+      type: string
+      minLength: 3
+      maxLength: 50
+      pattern: '^\S+$'
+      description: |
+        Usado no login. Único entre todos os usuários, sem espaços. Espaços no início e
+        no fim são removidos e o valor é gravado em minúsculas.
+      example: maria.silva
+    UserCreateRequest:
+      type: object
+      required: [name, username, password, role]
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 200
+          description: Nome de exibição. Não precisa ser único.
+          example: Maria Silva
+        username:
+          $ref: "#/components/schemas/Username"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          description: Mínimo de 8 caracteres e máximo de 72 bytes.
+        active:
+          type: boolean
+          default: true
+        role:
+          $ref: "#/components/schemas/Role"
+    UserUpdateRequest:
+      type: object
+      required: [name, username, active, role]
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 200
+        username:
+          $ref: "#/components/schemas/Username"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          description: Opcional. Quando vazio, a senha atual é mantida.
+        active:
+          type: boolean
+        role:
+          $ref: "#/components/schemas/Role"
+    User:
+      type: object
+      required: [id, name, username, active, createdAtUtc, role]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        username:
+          type: string
+        tenantId:
+          type: string
+          description: Ausente para usuários SuperAdmin.
+        active:
+          type: boolean
+        createdAtUtc:
+          type: string
+          format: date-time
+        role:
+          $ref: "#/components/schemas/Role"
+    UserPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/User"
+
+    CampaignRequest:
+      type: object
+      required: [name, expireInUtc]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Único dentro do tenant.
+          example: Black Friday
+        active:
+          type: boolean
+          default: true
+        expireInUtc:
+          type: string
+          format: date-time
+          description: No cadastro, deve estar no futuro; na edição, deve ser posterior à data de criação.
+          example: "2026-12-31T23:59:59Z"
+        pixelColorR:
+          type: integer
+          minimum: 0
+          maximum: 255
+          default: 0
+        pixelColorG:
+          type: integer
+          minimum: 0
+          maximum: 255
+          default: 0
+        pixelColorB:
+          type: integer
+          minimum: 0
+          maximum: 255
+          default: 0
+        pixelColorA:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 0
+          description: Opacidade do pixel, de 0 (transparente) a 1 (opaco).
+    CampaignUpdateRequest:
+      allOf:
+        - $ref: "#/components/schemas/CampaignRequest"
+        - type: object
+          required: [active]
+    Campaign:
+      type: object
+      required: [id, name, tenantId, active, createdAtUtc, expireInUtc, pixelColorR, pixelColorG, pixelColorB, pixelColorA]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        tenantId:
+          type: string
+        active:
+          type: boolean
+        createdAtUtc:
+          type: string
+          format: date-time
+        expireInUtc:
+          type: string
+          format: date-time
+        pixelColorR:
+          type: integer
+        pixelColorG:
+          type: integer
+        pixelColorB:
+          type: integer
+        pixelColorA:
+          type: number
+          format: float
+    CampaignPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/Campaign"
+
+    CampaignView:
+      type: object
+      required: [id, viewedOnUtc, ipAddress]
+      properties:
+        id:
+          type: string
+        viewedOnUtc:
+          type: string
+          format: date-time
+        externalUserId:
+          type: string
+          description: Ausente quando não informado no pixel.
+        ipAddress:
+          type: string
+        userAgent:
+          type: string
+          description: Ausente quando o cliente não enviou. Limitado a 512 caracteres.
+    CampaignViewPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/CampaignView"
+    ViewSummary:
+      type: object
+      required: [campaignId, totalViews, uniqueViews]
+      properties:
+        campaignId:
+          type: string
+        fromUtc:
+          type: string
+          format: date-time
+        toUtc:
+          type: string
+          format: date-time
+        totalViews:
+          type: integer
+          format: int64
+        uniqueViews:
+          type: integer
+          format: int64
+    DailyViews:
+      type: object
+      required: [campaignId, days]
+      properties:
+        campaignId:
+          type: string
+        days:
+          type: array
+          items:
+            type: object
+            required: [date, totalViews, uniqueViews]
+            properties:
+              date:
+                type: string
+                format: date
+                example: "2026-10-13"
+              totalViews:
+                type: integer
+                format: int64
+              uniqueViews:
+                type: integer
+                format: int64
+    ViewGroup:
+      type: object
+      required: [name, totalViews, uniqueViews]
+      properties:
+        name:
+          type: string
+          example: Gmail
+        totalViews:
+          type: integer
+          format: int64
+        uniqueViews:
+          type: integer
+          format: int64
+    UserAgentReport:
+      type: object
+      required: [campaignId, clients, operatingSystems, devices, userAgents]
+      properties:
+        campaignId:
+          type: string
+        fromUtc:
+          type: string
+          format: date-time
+        toUtc:
+          type: string
+          format: date-time
+        clients:
+          type: array
+          description: Por cliente de e-mail ou navegador, como `Gmail`, `Apple Mail`, `Outlook`, `Chrome`.
+          items:
+            $ref: "#/components/schemas/ViewGroup"
+        operatingSystems:
+          type: array
+          description: Por sistema operacional, como `Windows`, `macOS`, `iOS`, `Android`.
+          items:
+            $ref: "#/components/schemas/ViewGroup"
+        devices:
+          type: array
+          description: Por dispositivo `Desktop`, `Mobile`, `Tablet`, `Email proxy`, `Bot`, `Other` ou `Unknown`.
+          items:
+            $ref: "#/components/schemas/ViewGroup"
+        userAgents:
+          type: array
+          description: Por user agent completo, com a classificação de cada um.
+          items:
+            type: object
+            required: [userAgent, client, os, device, totalViews, uniqueViews]
+            properties:
+              userAgent:
+                type: string
+                description: Vazio para as visualizações sem user agent.
+              client:
+                type: string
+              os:
+                type: string
+              device:
+                type: string
+              totalViews:
+                type: integer
+                format: int64
+              uniqueViews:
+                type: integer
+                format: int64
+
+    PageInfo:
+      type: object
+      required: [total, page, pageSize]
+      properties:
+        total:
+          type: integer
+          format: int64
+          description: Total de itens em todas as páginas.
+        page:
+          type: integer
+        pageSize:
+          type: integer

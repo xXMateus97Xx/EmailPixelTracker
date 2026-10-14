@@ -1,0 +1,58 @@
+# API + SQL Server (Developer edition, x64 only).
+#   docker compose -f docker-compose.sqlserver.yml up --build
+# JWT_SECRET and SUPERADMIN_PASSWORD are read from the .env in this folder.
+name: email-pixel-tracker-sqlserver
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      # Needs upper and lower case letters, digits and symbols; it goes into a
+      # URL, so avoid characters such as @ # / ? %.
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-Pixel_Tracker_2026}
+    ports:
+      - "${SQLSERVER_PORT:-1433}:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    healthcheck:
+      # SQL Server has no option to create a database on startup, so the
+      # healthcheck creates it; the API only starts after it exists.
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -b -Q \"IF DB_ID('email_pixel_tracker') IS NULL CREATE DATABASE email_pixel_tracker\""]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  api:
+    build: .
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8080}:8080"
+    environment:
+      DB_DRIVER: sqlserver
+      # The container uses a self-signed certificate.
+      DB_DSN: "sqlserver://sa:${MSSQL_SA_PASSWORD:-Pixel_Tracker_2026}@sqlserver:1433?database=email_pixel_tracker&encrypt=true&TrustServerCertificate=true"
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_TTL: ${JWT_TTL:-1h}
+      BCRYPT_COST: ${BCRYPT_COST:-12}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
+      DOCS_PATH: ${DOCS_PATH:-}
+      SUPERADMIN_USERNAME: ${SUPERADMIN_USERNAME:-superadmin}
+      SUPERADMIN_NAME: ${SUPERADMIN_NAME:-Super Admin}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:?set SUPERADMIN_PASSWORD in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      # Internal only (not published); see docker-compose.observability.yml.
+      METRICS_ADDR: ":9464"
+      RECAPTCHA_ENABLED: ${RECAPTCHA_ENABLED:-false}
+      RECAPTCHA_SITE_KEY: ${RECAPTCHA_SITE_KEY:-}
+      RECAPTCHA_SECRET_KEY: ${RECAPTCHA_SECRET_KEY:-}
+      RECAPTCHA_MIN_SCORE: ${RECAPTCHA_MIN_SCORE:-0.5}
+
+volumes:
+  sqlserver-data:
