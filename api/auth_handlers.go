@@ -18,6 +18,7 @@ func (h *handler) recaptchaConfig(c *gin.Context) {
 	if res.Enabled {
 		res.SiteKey = h.recaptcha.SiteKey()
 		res.Action = recaptcha.LoginAction
+		res.ChangePasswordAction = recaptcha.ChangePasswordAction
 	}
 	c.JSON(http.StatusOK, res)
 }
@@ -33,7 +34,7 @@ func (h *handler) login(c *gin.Context) {
 	// Checked before the password, so a bot does not get to try passwords
 	// (nor make the API spend a bcrypt comparison on them).
 	if err := h.recaptcha.Verify(ctx, req.RecaptchaToken, recaptcha.LoginAction); err != nil {
-		h.writeRecaptchaError(c, err)
+		h.writeRecaptchaError(c, err, "login failed", h.metrics.Login)
 		return
 	}
 
@@ -54,21 +55,72 @@ func (h *handler) login(c *gin.Context) {
 	h.writeToken(c, p)
 }
 
-func (h *handler) writeRecaptchaError(c *gin.Context, err error) {
+// writeRecaptchaError answers a failed reCAPTCHA verification. failure is the
+// log message and record counts the result in the operation's metric.
+func (h *handler) writeRecaptchaError(c *gin.Context, err error, failure string, record func(result string)) {
 	ctx := c.Request.Context()
 	switch {
 	case errors.Is(err, recaptcha.ErrMissingToken):
-		h.metrics.Login("invalid_request")
+		record("invalid_request")
 		badRequest(c, service.ErrValidation.Error(), fieldErrorResponse{Field: "recaptchaToken", Message: "is required"})
 	case errors.Is(err, recaptcha.ErrRejected):
-		h.metrics.Login("recaptcha_rejected")
-		slog.InfoContext(ctx, "login failed", "reason", "recaptcha_rejected", "detail", err.Error())
+		record("recaptcha_rejected")
+		slog.InfoContext(ctx, failure, "reason", "recaptcha_rejected", "detail", err.Error())
 		c.JSON(http.StatusForbidden, errorResponse{Error: recaptcha.ErrRejected.Error()})
 	default:
 		// Without an answer from Google the token cannot be trusted: fail closed.
-		h.metrics.Login("recaptcha_unavailable")
-		slog.WarnContext(ctx, "login failed", "reason", "recaptcha_unavailable", "error", err)
+		record("recaptcha_unavailable")
+		slog.WarnContext(ctx, failure, "reason", "recaptcha_unavailable", "error", err)
 		c.JSON(http.StatusServiceUnavailable, errorResponse{Error: recaptcha.ErrUnavailable.Error()})
+	}
+}
+
+func (h *handler) changePassword(c *gin.Context) {
+	var req changePasswordRequest
+	if !bindJSON(c, &req) {
+		h.metrics.PasswordChange("invalid_request")
+		return
+	}
+	ctx := c.Request.Context()
+
+	// As in the login: a bot does not get to guess the current password.
+	if err := h.recaptcha.Verify(ctx, req.RecaptchaToken, recaptcha.ChangePasswordAction); err != nil {
+		h.writeRecaptchaError(c, err, "password change failed", h.metrics.PasswordChange)
+		return
+	}
+
+	err := h.svc.Auth().ChangePassword(ctx, req.CurrentPassword, req.NewPassword)
+	result := passwordChangeResult(err)
+	h.metrics.PasswordChange(result)
+	if err != nil {
+		if result != "error" {
+			slog.InfoContext(ctx, "password change failed", "reason", result)
+		}
+		writeError(c, err)
+		return
+	}
+	if p, ok := auth.FromContext(ctx); ok {
+		slog.InfoContext(ctx, "password changed", "user_id", p.UserId)
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func passwordChangeResult(err error) string {
+	var verr *service.ValidationError
+	switch {
+	case err == nil:
+		return "success"
+	case errors.As(err, &verr):
+		for _, fe := range verr.Errors {
+			if fe.Field == "currentPassword" && fe.Message == "is incorrect" {
+				return "wrong_password"
+			}
+		}
+		return "invalid_request"
+	case errors.Is(err, service.ErrUnauthenticated), errors.Is(err, service.ErrTenantInactive):
+		return "unauthenticated"
+	default:
+		return "error"
 	}
 }
 

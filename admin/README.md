@@ -29,9 +29,10 @@ Entre com o SuperAdmin configurado no `.env` da API (`SUPERADMIN_USERNAME`/`SUPE
 
 ## reCAPTCHA
 
-O reCAPTCHA v3 do login é configurado na API (`RECAPTCHA_*` no `.env` da raiz), não aqui.
-A tela de login pergunta à API (`GET /api/auth/recaptcha`) se ele está ativo e, se estiver,
-carrega o script do Google e envia o token no login. Com ele ativo, o login exige JavaScript.
+O reCAPTCHA v3 do login e da troca de senha (`/password`, no link "Alterar senha" do menu) é
+configurado na API (`RECAPTCHA_*` no `.env` da raiz), não aqui. As duas telas perguntam à API
+(`GET /api/auth/recaptcha`) se ele está ativo e, se estiver, carregam o script do Google e
+enviam o token junto com o formulário. Com ele ativo, as duas telas exigem JavaScript.
 
 ## Docker
 

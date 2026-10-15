@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 
+import { RecaptchaNotice } from "@/components/recaptcha-notice";
 import { Alert } from "@/components/ui";
-import { getRecaptchaConfig } from "@/lib/recaptcha";
+import { recaptchaFor } from "@/lib/recaptcha";
 import { LoginForm } from "./login-form";
 
 export const metadata: Metadata = { title: "Entrar" };
@@ -14,7 +15,7 @@ const reasons: Record<string, string> = {
 export default async function LoginPage({ searchParams }: PageProps<"/login">) {
   const { reason } = await searchParams;
   const message = typeof reason === "string" ? reasons[reason] : undefined;
-  const recaptcha = await getRecaptchaConfig();
+  const recaptcha = await recaptchaFor("login");
 
   return (
     <main className="flex min-h-screen items-center justify-center px-4 py-12">
@@ -28,22 +29,9 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
         </div>
         <div className="space-y-5 rounded-lg border border-zinc-200 bg-white p-6 shadow-xs">
           {message && <Alert tone="amber">{message}</Alert>}
-          <LoginForm recaptcha={recaptcha.enabled && recaptcha.siteKey ? { siteKey: recaptcha.siteKey, action: recaptcha.action ?? "login" } : undefined} />
+          <LoginForm recaptcha={recaptcha} />
         </div>
-        {recaptcha.enabled && (
-          // Google's terms allow hiding the badge only with this notice.
-          <p className="mt-4 text-center text-xs text-zinc-500">
-            Protegido pelo reCAPTCHA. Aplicam-se a{" "}
-            <a href="https://policies.google.com/privacy" className="underline hover:text-zinc-700" target="_blank" rel="noreferrer">
-              Política de Privacidade
-            </a>{" "}
-            e os{" "}
-            <a href="https://policies.google.com/terms" className="underline hover:text-zinc-700" target="_blank" rel="noreferrer">
-              Termos de Serviço
-            </a>{" "}
-            do Google.
-          </p>
-        )}
+        {recaptcha && <RecaptchaNotice className="mt-4 text-center" />}
       </div>
     </main>
   );

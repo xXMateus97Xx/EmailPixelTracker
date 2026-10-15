@@ -136,7 +136,7 @@ func (s *UserService) validate(ctx context.Context, p auth.Principal, user *doma
 	validateUserName(v, user.Name)
 	validateUsername(v, user.Username)
 	if creating || password != "" {
-		validatePassword(v, password)
+		validatePassword(v, "password", password)
 	}
 	validateRole(v, user)
 
@@ -176,9 +176,9 @@ func validateUsername(v *validator, username string) {
 		"username", "must not contain spaces")
 }
 
-func validatePassword(v *validator, password string) {
-	v.check(utf8.RuneCountInString(password) >= passwordMinLength, "password", "must have at least 8 characters")
-	v.check(len(password) <= passwordMaxBytes, "password", "must have at most 72 bytes")
+func validatePassword(v *validator, field, password string) {
+	v.check(utf8.RuneCountInString(password) >= passwordMinLength, field, "must have at least 8 characters")
+	v.check(len(password) <= passwordMaxBytes, field, "must have at most 72 bytes")
 }
 
 func validateRole(v *validator, user *domain.User) {

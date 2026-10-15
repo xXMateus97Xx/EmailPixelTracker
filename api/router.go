@@ -26,7 +26,7 @@ type RouterConfig struct {
 	// Readiness checks the dependencies (the database) for /health/ready.
 	// Optional; without it the API is always ready.
 	Readiness func(ctx context.Context) error
-	// Recaptcha protects the login. Optional; nil disables it.
+	// Recaptcha protects the login and the password change. Optional; nil disables it.
 	Recaptcha *recaptcha.Verifier
 	// TrustedProxies are the IPs/CIDRs of the reverse proxies allowed to set
 	// X-Forwarded-For. Empty means the client IP is the connection address.
@@ -64,6 +64,7 @@ func NewRouter(svc *service.Services, tokens *TokenManager, cfg RouterConfig) (*
 
 	private := router.Group("/api", authenticate(tokens))
 	private.GET("/auth/me", h.me)
+	private.POST("/auth/change-password", h.changePassword)
 	private.POST("/auth/impersonate", h.impersonate)
 	private.POST("/auth/stop-impersonation", h.stopImpersonation)
 

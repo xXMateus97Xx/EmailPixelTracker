@@ -1,6 +1,6 @@
 import "server-only";
 
-import { notFound } from "next/navigation";
+import { notFound, unstable_rethrow } from "next/navigation";
 
 import { getToken } from "./session";
 import type { ErrorBody, FieldError } from "./types";
@@ -32,6 +32,9 @@ type Options = { body?: unknown; query?: Query; anonymous?: boolean };
  */
 export async function api<T>(method: Method, path: string, options: Options = {}): Promise<T> {
   const res = await send(method, path, options);
+  if (res.status === 204) {
+    return undefined as T;
+  }
   return (await res.json()) as T;
 }
 
@@ -68,6 +71,9 @@ async function send(method: Method, path: string, options: Options, accept = "ap
       cache: "no-store",
     });
   } catch (err) {
+    // Next.js signals its own control flow (e.g. a page that must render
+    // dynamically) by throwing from fetch: that is not a network failure.
+    unstable_rethrow(err);
     console.error(`API unreachable at ${API_URL}`, err);
     throw new ApiError(0, "Não foi possível conectar à API.");
   }

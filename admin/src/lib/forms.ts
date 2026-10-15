@@ -8,8 +8,8 @@ import type { FormState } from "./form-state";
 export function formValues(formData: FormData): Record<string, string> {
   const values: Record<string, string> = {};
   for (const [key, value] of formData.entries()) {
-    // Passwords are never sent back to the browser.
-    if (typeof value === "string" && !key.startsWith("$") && key !== "password") {
+    // Passwords (password, currentPassword, newPassword) are never sent back to the browser.
+    if (typeof value === "string" && !key.startsWith("$") && !/password/i.test(key)) {
       values[key] = value;
     }
   }
@@ -25,6 +25,8 @@ const exact: Record<string, string> = {
   "must be after the campaign creation date": "precisa ser posterior à criação da campanha",
   "you cannot deactivate your own user": "você não pode desativar o próprio usuário",
   "must have at most 72 bytes": "pode ter no máximo 72 bytes",
+  "is incorrect": "está incorreta",
+  "must be different from the current password": "precisa ser diferente da senha atual",
   "must be after fromUtc": "precisa ser posterior à data inicial",
   "invalid credentials": "Usuário ou senha inválidos.",
   "tenant is inactive": "O tenant está inativo.",

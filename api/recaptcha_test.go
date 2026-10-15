@@ -42,7 +42,7 @@ func TestLoginWithRecaptcha(t *testing.T) {
 
 	var cfg recaptchaConfigResponse
 	c.do(http.MethodGet, "/api/auth/recaptcha", "", nil, http.StatusOK, &cfg)
-	if cfg != (recaptchaConfigResponse{Enabled: true, SiteKey: "site-key", Action: "login"}) {
+	if cfg != (recaptchaConfigResponse{Enabled: true, SiteKey: "site-key", Action: "login", ChangePasswordAction: "change_password"}) {
 		t.Fatalf("enabled config %+v", cfg)
 	}
 

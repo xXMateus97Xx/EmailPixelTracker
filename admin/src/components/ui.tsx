@@ -85,11 +85,12 @@ export function ActiveBadge({ active }: { active: boolean }) {
   return active ? <Badge tone="green">Ativo</Badge> : <Badge tone="red">Inativo</Badge>;
 }
 
-export function Alert({ tone = "red", children }: { tone?: "red" | "amber" | "indigo"; children: ReactNode }) {
+export function Alert({ tone = "red", children }: { tone?: "red" | "amber" | "indigo" | "green"; children: ReactNode }) {
   const styles = {
     red: "border-red-200 bg-red-50 text-red-800",
     amber: "border-amber-200 bg-amber-50 text-amber-900",
     indigo: "border-indigo-200 bg-indigo-50 text-indigo-900",
+    green: "border-emerald-200 bg-emerald-50 text-emerald-900",
   };
   return (
     <div role={tone === "red" ? "alert" : "status"} className={`rounded-md border px-4 py-3 text-sm ${styles[tone]}`}>

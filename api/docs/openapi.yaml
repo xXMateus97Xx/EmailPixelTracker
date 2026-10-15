@@ -208,12 +208,13 @@ paths:
   /api/auth/recaptcha:
     get:
       tags: [Auth]
-      summary: Informa se o reCAPTCHA v3 está ativo no login
+      summary: Informa se o reCAPTCHA v3 está ativo no login e na troca de senha
       operationId: recaptchaConfig
       description: |
         Público. Quando `enabled` é true, a tela de login carrega
         `https://www.google.com/recaptcha/api.js?render=<siteKey>`, gera um token com
         `grecaptcha.execute(siteKey, {action})` e o envia em `recaptchaToken` no login.
+        A tela de troca de senha faz o mesmo com `changePasswordAction`.
       security: []
       responses:
         "200":
@@ -239,6 +240,63 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+
+  /api/auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Troca a senha do usuário autenticado
+      operationId: changePassword
+      description: |
+        Qualquer role pode trocar a própria senha, inclusive um SuperAdmin impersonando um
+        tenant inativo. A senha atual é confirmada; uma senha atual incorreta é um erro de
+        validação (400) no campo `currentPassword`, não um 401.
+
+        Com o reCAPTCHA ativo (veja `GET /api/auth/recaptcha`), `recaptchaToken` é obrigatório,
+        gerado com a ação `changePasswordAction`, e é verificado antes da senha atual.
+
+        O token usado na chamada continua válido até expirar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "204":
+          description: Senha alterada.
+        "400":
+          description: |
+            Erro de validação: `currentPassword` ausente ou incorreta (`is incorrect`),
+            `newPassword` inválida ou igual à atual, ou `recaptchaToken` ausente.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: validation failed
+                fields:
+                  - field: currentPassword
+                    message: is incorrect
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            O tenant do usuário está inativo (`tenant is inactive`) ou o token do reCAPTCHA foi
+            recusado (`recaptcha verification failed`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: recaptcha verification failed
+        "503":
+          description: O Google não respondeu à verificação do reCAPTCHA; a troca é recusada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: recaptcha verification unavailable
 
   /api/auth/impersonate:
     post:
@@ -954,8 +1012,29 @@ components:
           description: Chave pública do site. Presente quando `enabled` é true.
         action:
           type: string
-          description: Ação a usar no `grecaptcha.execute`. Presente quando `enabled` é true.
+          description: Ação a usar no `grecaptcha.execute` do login. Presente quando `enabled` é true.
           example: login
+        changePasswordAction:
+          type: string
+          description: Ação a usar no `grecaptcha.execute` da troca de senha. Presente quando `enabled` é true.
+          example: change_password
+    ChangePasswordRequest:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+          format: password
+        newPassword:
+          type: string
+          format: password
+          minLength: 8
+          description: Pelo menos 8 caracteres e no máximo 72 bytes; diferente da atual.
+        recaptchaToken:
+          type: string
+          description: |
+            Token do reCAPTCHA v3, gerado com `grecaptcha.execute(siteKey, {action: "change_password"})`.
+            Obrigatório quando `GET /api/auth/recaptcha` retorna `enabled: true`; ignorado caso contrário.
     ImpersonateRequest:
       type: object
       required: [tenantId]

@@ -45,7 +45,10 @@ export type RoleInfo = { name: Role; assignable: boolean };
 
 export type Token = { token: string; expiresAtUtc: string };
 
-export type RecaptchaConfig = { enabled: boolean; siteKey?: string; action?: string };
+export type RecaptchaConfig = { enabled: boolean; siteKey?: string; action?: string; changePasswordAction?: string };
+
+/** What a form needs to make a reCAPTCHA token. */
+export type RecaptchaSettings = { siteKey: string; action: string };
 
 export type Campaign = {
   id: string;

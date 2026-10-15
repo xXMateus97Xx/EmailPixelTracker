@@ -82,6 +82,43 @@ func (s *AuthService) Me(ctx context.Context) (*domain.User, Session, error) {
 	return withoutPassword(user), session, nil
 }
 
+// ChangePassword changes the password of the current user, who must confirm
+// the current one. Any role may do it, also while impersonating an inactive
+// tenant: the user is not tenant data.
+func (s *AuthService) ChangePassword(ctx context.Context, currentPassword, newPassword string) error {
+	session, err := s.authn.current(ctx)
+	if err != nil {
+		return err
+	}
+
+	v := &validator{}
+	v.check(currentPassword != "", "currentPassword", "is required")
+	validatePassword(v, "newPassword", newPassword)
+	if err := v.err(); err != nil {
+		return err
+	}
+
+	user, err := s.users.GetById(ctx, session.TenantId, session.UserId)
+	if err != nil {
+		return mapRepoError(err)
+	}
+	// A wrong current password is a field error, not a 401: the session is
+	// still valid and the client must not treat it as logged out.
+	if bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(currentPassword)) != nil {
+		v.add("currentPassword", "is incorrect")
+		return v.err()
+	}
+	if newPassword == currentPassword {
+		v.add("newPassword", "must be different from the current password")
+		return v.err()
+	}
+
+	if user.Password, err = s.hasher.hash(newPassword); err != nil {
+		return err
+	}
+	return mapRepoError(s.users.Update(ctx, user.TenantId, user))
+}
+
 // Impersonate returns a copy of the current SuperAdmin principal scoped to the
 // given tenant. The caller is responsible for persisting it (e.g. in a new
 // token). Inactive tenants can be impersonated, but only in read-only mode.
@@ -117,7 +154,7 @@ func (s *AuthService) EnsureSuperAdmin(ctx context.Context, username, name, pass
 	v := &validator{}
 	validateUsername(v, username)
 	validateUserName(v, name)
-	validatePassword(v, password)
+	validatePassword(v, "password", password)
 	if err := v.err(); err != nil {
 		return false, err
 	}

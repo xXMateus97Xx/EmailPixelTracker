@@ -21,13 +21,14 @@ const namespace = "email_tracker"
 type Metrics struct {
 	registry *prometheus.Registry
 
-	httpRequests   *prometheus.CounterVec
-	httpDuration   *prometheus.HistogramVec
-	pixelRequests  *prometheus.CounterVec
-	pixelCache     prometheus.Gauge
-	logins         *prometheus.CounterVec
-	impersonations *prometheus.CounterVec
-	dbDuration     *prometheus.HistogramVec
+	httpRequests    *prometheus.CounterVec
+	httpDuration    *prometheus.HistogramVec
+	pixelRequests   *prometheus.CounterVec
+	pixelCache      prometheus.Gauge
+	logins          *prometheus.CounterVec
+	passwordChanges *prometheus.CounterVec
+	impersonations  *prometheus.CounterVec
+	dbDuration      *prometheus.HistogramVec
 }
 
 func NewMetrics() *Metrics {
@@ -54,6 +55,10 @@ func NewMetrics() *Metrics {
 			Namespace: namespace, Name: "logins_total",
 			Help: "Login attempts by result.",
 		}, []string{"result"}),
+		passwordChanges: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace, Name: "password_changes_total",
+			Help: "Attempts of users to change their own password, by result.",
+		}, []string{"result"}),
 		impersonations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace, Name: "impersonations_total",
 			Help: "Impersonations started and stopped by SuperAdmins.",
@@ -68,7 +73,7 @@ func NewMetrics() *Metrics {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.httpRequests, m.httpDuration, m.pixelRequests, m.pixelCache,
-		m.logins, m.impersonations, m.dbDuration,
+		m.logins, m.passwordChanges, m.impersonations, m.dbDuration,
 	)
 	return m
 }
@@ -112,6 +117,12 @@ func (m *Metrics) PixelCached() {
 func (m *Metrics) Login(result string) {
 	if m != nil {
 		m.logins.WithLabelValues(result).Inc()
+	}
+}
+
+func (m *Metrics) PasswordChange(result string) {
+	if m != nil {
+		m.passwordChanges.WithLabelValues(result).Inc()
 	}
 }
 

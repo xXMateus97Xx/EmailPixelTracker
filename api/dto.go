@@ -34,7 +34,16 @@ type loginRequest struct {
 type recaptchaConfigResponse struct {
 	Enabled bool   `json:"enabled"`
 	SiteKey string `json:"siteKey,omitempty"`
-	Action  string `json:"action,omitempty"`
+	// Action is the action of the login tokens.
+	Action               string `json:"action,omitempty"`
+	ChangePasswordAction string `json:"changePasswordAction,omitempty"`
+}
+
+type changePasswordRequest struct {
+	CurrentPassword string `json:"currentPassword"`
+	NewPassword     string `json:"newPassword"`
+	// RecaptchaToken is required when reCAPTCHA is enabled.
+	RecaptchaToken string `json:"recaptchaToken,omitempty"`
 }
 
 type impersonateRequest struct {

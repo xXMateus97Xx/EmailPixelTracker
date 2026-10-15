@@ -19,6 +19,8 @@ import (
 const (
 	// LoginAction is the action of the tokens made on the login page.
 	LoginAction = "login"
+	// ChangePasswordAction is the action of the tokens made on the change password page.
+	ChangePasswordAction = "change_password"
 	// DefaultMinScore is Google's suggested threshold: 1.0 is very likely a
 	// person, 0.0 very likely a bot.
 	DefaultMinScore = 0.5

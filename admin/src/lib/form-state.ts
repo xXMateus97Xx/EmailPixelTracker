@@ -3,6 +3,8 @@
 /** State returned by the Server Actions of the forms (useActionState). */
 export type FormState = {
   error?: string;
+  /** Shown when the action succeeded and the form stays on the page. */
+  success?: string;
   fields?: Record<string, string>;
   /** Submitted values, so the form keeps them after an error. */
   values?: Record<string, string>;

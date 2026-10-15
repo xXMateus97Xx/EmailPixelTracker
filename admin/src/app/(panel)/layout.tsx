@@ -1,5 +1,5 @@
 import { SubmitButton } from "@/components/form";
-import { Badge } from "@/components/ui";
+import { Badge, LinkButton } from "@/components/ui";
 import { getMe } from "@/lib/auth";
 import { roleLabels } from "@/lib/format";
 import { logout, stopImpersonation } from "./actions";
@@ -69,11 +69,16 @@ function UserCard({ me, compact = false }: { me: Awaited<ReturnType<typeof getMe
           </div>
         )}
       </div>
-      <form action={logout}>
-        <SubmitButton variant="secondary" pendingText="Saindo…" className={compact ? "py-1" : "w-full"}>
-          Sair
-        </SubmitButton>
-      </form>
+      <div className={compact ? "flex shrink-0 gap-2" : "space-y-2"}>
+        <LinkButton href="/password" variant="ghost" className={compact ? "whitespace-nowrap py-1" : "w-full"}>
+          Alterar senha
+        </LinkButton>
+        <form action={logout}>
+          <SubmitButton variant="secondary" pendingText="Saindo…" className={compact ? "py-1" : "w-full"}>
+            Sair
+          </SubmitButton>
+        </form>
+      </div>
     </div>
   );
 }

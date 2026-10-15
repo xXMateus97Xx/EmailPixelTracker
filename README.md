@@ -126,7 +126,7 @@ ambiente têm prioridade. O [.env.example](.env.example) traz todas, comentadas.
 | `LOG_FORMAT` | `json` | `json` ou `text`. |
 | `METRICS_ADDR` | vazio | Endereço das métricas Prometheus (ex.: `:9464`); vazio desliga. Não exponha publicamente. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | vazio | Endpoint OTLP/HTTP dos traces (ex.: `http://localhost:4318`); vazio desliga. |
-| `RECAPTCHA_ENABLED` | `false` | Exige reCAPTCHA v3 no login. |
+| `RECAPTCHA_ENABLED` | `false` | Exige reCAPTCHA v3 no login e na troca de senha. |
 | `RECAPTCHA_SITE_KEY` / `RECAPTCHA_SECRET_KEY` | — | Chaves do reCAPTCHA, obrigatórias quando ele está ativo. |
 | `RECAPTCHA_MIN_SCORE` | `0.5` | Nota mínima aceita, de 0.0 (robô) a 1.0 (pessoa). |
 
@@ -138,8 +138,9 @@ Swagger UI. Resumo das rotas:
 | Rota | Descrição |
 |---|---|
 | `POST /api/auth/login` | Login: devolve um token JWT. |
-| `GET /api/auth/recaptcha` | Informa se o login exige reCAPTCHA (pública). |
+| `GET /api/auth/recaptcha` | Informa se o login e a troca de senha exigem reCAPTCHA (pública). |
 | `GET /api/auth/me` | Usuário atual, tenant e permissões. |
+| `POST /api/auth/change-password` | Troca a senha do usuário atual, confirmando a senha atual. |
 | `POST /api/auth/impersonate` / `stop-impersonation` | SuperAdmin entra em um tenant ou sai dele. |
 | `GET /api/roles` | Roles, indicando quais o usuário atual pode atribuir. |
 | `/api/tenants` | Lista, cadastro e edição de tenants. |
@@ -180,7 +181,7 @@ Detalhes úteis:
 - **Request ID:** toda resposta traz `X-Request-ID`, que também pode ser enviado na requisição.
   Ele aparece em todos os logs da requisição.
 - **Métricas Prometheus** em `METRICS_ADDR`, com prefixo `email_tracker_`: requisições HTTP,
-  pixels por resultado, logins, impersonações, duração das operações no banco e métricas do
+  pixels por resultado, logins, trocas de senha, impersonações, duração das operações no banco e métricas do
   runtime do Go.
 - **Traces OpenTelemetry**: HTTP e banco de dados, exportados via OTLP quando
   `OTEL_EXPORTER_OTLP_ENDPOINT` está definido. O header `traceparent` é aceito.
